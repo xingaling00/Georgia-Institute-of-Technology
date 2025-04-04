@@ -1,0 +1,217 @@
+"""
+Project: Image Segmentation using K-Means and Gaussian Mixture Models (GMM)
+
+Description:
+This script provides tools to perform unsupervised image segmentation using K-Means clustering 
+and Gaussian Mixture Models (GMMs). It includes:
+- K-Means clustering-based segmentation
+- GMM parameter estimation using Expectation-Maximization (EM)
+- Model selection using Bayesian Information Criterion (BIC)
+- Improved initialization and convergence strategies
+
+Main Capabilities:
+- Efficient segmentation of RGB images into k clusters
+- Initialization and training of GMMs
+- Custom convergence functions and likelihood scoring
+- Utility functions for calculating probabilities, responsibilities, and component assignments
+"""
+
+import numpy as np
+from helper_functions import *
+
+def get_initial_means(array, k):
+    """
+    Randomly selects k data points from the dataset as initial cluster means.
+    """
+    m = array.shape[0]
+    random_indices = np.random.choice(m, k, replace=False)
+    return array[random_indices]
+
+def k_means_step(X, k, means):
+    """
+    Executes one step of the K-Means clustering algorithm:
+    - Assigns points to the nearest cluster center
+    - Recomputes cluster centers as the mean of assigned points
+    """
+    distances = np.sum((X[:, np.newaxis] - means[np.newaxis, :]) ** 2, axis=2)
+    labels = np.argmin(distances, axis=1)
+    new_means = np.array([X[labels == cluster].mean(axis=0) for cluster in range(k)])
+    return new_means, labels
+
+def k_means_segment(image_values, k=3, initial_means=None):
+    """
+    Segments an RGB image using the K-Means clustering algorithm.
+    Returns a version of the image where each pixel is replaced by its cluster center.
+    """
+    m, n, c = image_values.shape
+    X = image_values.reshape(-1, c)
+
+    if initial_means is None:
+        means = get_initial_means(X, k)
+    else:
+        means = initial_means
+
+    old_clusters = None
+    while True:
+        means, clusters = k_means_step(X, k, means)
+        if old_clusters is not None and np.all(clusters == old_clusters):
+            break
+        old_clusters = clusters
+
+    segmented = means[clusters].reshape(m, n, c)
+    return segmented
+
+def initialize_parameters(X, k):
+    """
+    Initializes GMM parameters: means (MU), covariances (SIGMA), and mixing coefficients (PI).
+    Means are chosen from the data, and covariances are based on initial scatter.
+    """
+    m, n = X.shape
+    MU = get_initial_means(X, k)
+
+    SIGMA = np.zeros((k, n, n))
+    for i in range(k):
+        diff = X - MU[i]
+        SIGMA[i] = np.dot(diff.T, diff) / m + 1e-6 * np.eye(n)
+
+    PI = np.ones(k) / k
+    return MU, SIGMA, PI
+
+def prob(x, mu, sigma):
+    """
+    Computes the Gaussian probability density for a point or set of points given a mean and covariance.
+    """
+    x_2d = x.reshape(-1, x.shape[-1]) if x.ndim == 1 else x
+    n = x_2d.shape[1]
+    inv_sigma = np.linalg.inv(sigma)
+    det_sigma = np.linalg.det(sigma)
+    normalizer = 1.0 / np.sqrt((2 * np.pi) ** n * det_sigma)
+    diff = x_2d - mu
+    exponent = -0.5 * np.sum(np.dot(diff, inv_sigma) * diff, axis=1)
+    prob_result = normalizer * np.exp(exponent)
+    return prob_result[0] if x.ndim == 1 else prob_result
+
+def E_step(X, MU, SIGMA, PI, k):
+    """
+    E-Step of the EM algorithm: computes the responsibilities (soft cluster assignments) for each point.
+    """
+    m = X.shape[0]
+    resp = np.zeros((k, m))
+    for i in range(k):
+        resp[i] = PI[i] * prob(X, MU[i], SIGMA[i])
+    resp /= (np.sum(resp, axis=0) + 1e-10)
+    return resp
+
+def M_step(X, r, k):
+    """
+    M-Step of the EM algorithm: updates MU, SIGMA, and PI using responsibilities computed in E-Step.
+    """
+    m, n = X.shape
+    Nk = np.sum(r, axis=1)
+    new_PI = Nk / m
+    new_MU = np.dot(r, X) / Nk[:, np.newaxis]
+    new_SIGMA = np.zeros((k, n, n))
+    for i in range(k):
+        diff = X - new_MU[i]
+        weighted_diff = diff * np.sqrt(r[i, :, np.newaxis])
+        new_SIGMA[i] = np.dot(weighted_diff.T, weighted_diff) / Nk[i]
+    return new_MU, new_SIGMA, new_PI
+
+def likelihood(X, PI, MU, SIGMA, k):
+    """
+    Computes the total log-likelihood of the data given the current GMM parameters.
+    """
+    m, n = X.shape
+    component_probs = np.zeros((k, m))
+    for j in range(k):
+        diff = X - MU[j]
+        inv_sigma = np.linalg.inv(SIGMA[j])
+        exponent = np.sum(np.dot(diff, inv_sigma) * diff, axis=1)
+        det_sigma = np.linalg.det(SIGMA[j])
+        normalizer = 1.0 / np.sqrt((2 * np.pi) ** n * det_sigma)
+        component_probs[j] = PI[j] * normalizer * np.exp(-0.5 * exponent)
+    total_prob = np.sum(component_probs, axis=0)
+    return np.sum(np.log(total_prob + 1e-10))
+
+def train_model(X, k, convergence_function, initial_values=None):
+    """
+    Trains a GMM using the EM algorithm. Stops when convergence criteria are met.
+    """
+    if initial_values is None:
+        MU, SIGMA, PI = initialize_parameters(X, k)
+    else:
+        MU, SIGMA, PI = initial_values
+
+    m, n = X.shape
+    conv_ctr = 0
+    max_iters = 30
+    responsibility = np.zeros((k, m))
+    prev_likelihood = likelihood(X, PI, MU, SIGMA, k)
+    min_improvement = 1e-4
+
+    for _ in range(max_iters):
+        probs = np.zeros((k, m))
+        for i in range(k):
+            probs[i] = PI[i] * prob(X, MU[i], SIGMA[i])
+        responsibility = probs / (np.sum(probs, axis=0) + 1e-10)
+
+        Nk = np.sum(responsibility, axis=1)
+        PI = Nk / m
+        MU = np.dot(responsibility, X) / Nk[:, np.newaxis]
+
+        for i in range(k):
+            diff = X - MU[i]
+            weighted_diff = diff * np.sqrt(responsibility[i, :, np.newaxis])
+            SIGMA[i] = np.dot(weighted_diff.T, weighted_diff) / Nk[i]
+
+        new_likelihood = likelihood(X, PI, MU, SIGMA, k)
+        conv_ctr, terminate = convergence_function(prev_likelihood, new_likelihood, conv_ctr)
+        if abs(new_likelihood - prev_likelihood) < min_improvement * abs(prev_likelihood) or terminate:
+            break
+        prev_likelihood = new_likelihood
+
+    return MU, SIGMA, PI, responsibility
+
+def cluster(r):
+    """
+    Assigns each data point to the cluster with the highest responsibility.
+    """
+    return np.argmax(r, axis=0)
+
+def segment(X, MU, k, r):
+    """
+    Replaces each point in X with its cluster's mean based on highest responsibility.
+    """
+    return MU[np.argmax(r, axis=0)]
+
+def best_segment(X, k, iters):
+    """
+    Trains the GMM multiple times and returns the best segmentation result
+    (i.e., one with the highest log-likelihood).
+    """
+    best_likelihood = float('-inf')
+    best_segment_result = None
+    for _ in range(iters):
+        MU, SIGMA, PI, r = train_model(X, k, default_convergence)
+        current_likelihood = likelihood(X, PI, MU, SIGMA, k)
+        current_segment = segment(X, MU, k, r)
+        if current_likelihood > best_likelihood:
+            best_likelihood = current_likelihood
+            best_segment_result = current_segment
+    return best_likelihood, best_segment_result
+
+def bayes_info_criterion(X, PI, MU, SIGMA, k):
+    """
+    Computes the Bayesian Information Criterion (BIC) score for a trained GMM.
+    """
+    m, n = X.shape
+    log_likelihood = likelihood(X, PI, MU, SIGMA, k)
+    n_params = k * n + k * (n * (n + 1)) // 2 + (k - 1)
+    bic = np.log(m) * n_params - 2 * log_likelihood
+    return int(bic)
+
+def return_your_name():
+    """
+    Returns your name as required.
+    """
+    return "Shi Evelyn"
