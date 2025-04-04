@@ -1,0 +1,209 @@
+
+"""
+This script builds and analyzes Hidden Markov Models (HMMs) for gesture recognition based on observed features.
+It performs the following tasks:
+
+- Splits observation data into three states based on statistical patterns.
+- Calculates prior, transition, and emission probabilities for words: ALLIGATOR, NUTS, and SLEEP.
+- Implements the Viterbi algorithm for decoding the most probable state sequences.
+- Supports both single-dimensional and multi-dimensional observations (e.g., right-hand and thumb positions).
+"""
+
+import numpy as np
+import operator
+
+# Adjust state boundaries based on comparing distances from distribution means
+
+def Boundary_detection(obs_len, left1, right1, left2, right2, index1, index2, mean1, mean2, mean3, std1, std2, std3):
+    curindex1 = index1
+    curindex2 = index2
+    flag = False
+
+    # Move index1 if region 1 seems closer to region 2
+    if index1 > 1 and abs(left1-mean1)/std1 > abs(left1-mean2)/std2:
+        index1 -= 1
+        flag = True
+    elif abs(right1-mean1)/std1 < abs(right1-mean2)/std2:
+        index1 += 1
+        flag = True
+
+    # Move index2 if region 2 seems closer to region 3
+    if abs(left2-mean2)/std2 > abs(left2-mean3)/std3:
+        index2 -= 1
+        flag = True
+    elif index2 < obs_len-1 and abs(right2-mean2)/std2 < abs(right2-mean3)/std3:
+        index2 += 1
+        flag = True
+
+    # Ensure index1 < index2 to prevent overlap
+    if index1+1 > index2:
+        index1 = curindex1
+        index2 = curindex2
+        flag = False
+
+    return flag, index1, index2
+
+
+# Automatically classify observations into 3 states based on statistical differences
+
+def class_split(obs, cor_index=None):
+    obs_len = np.array([len(obj) for obj in obs])
+
+    if cor_index is not None:
+        index1, index2 = cor_index
+    else:
+        index1 = np.ceil(obs_len/3).astype(np.int16)
+        index2 = 2*index1
+
+    flag = True
+    while flag:
+        flag = False
+        # Combine segments for each region
+        s1 = obs[0][:index1[0]] + obs[1][:index1[1]] + obs[2][:index1[2]]
+        s2 = obs[0][index1[0]:index2[0]] + obs[1][index1[1]:index2[1]] + obs[2][index1[2]:index2[2]]
+        s3 = obs[0][index2[0]:] + obs[1][index2[1]:] + obs[2][index2[2]:]
+
+        mean1, mean2, mean3 = np.mean(s1), np.mean(s2), np.mean(s3)
+        std1, std2, std3 = np.std(s1), np.std(s2), np.std(s3)
+
+        # Refine boundaries
+        for i in range(3):
+            curobs = obs[i]
+            left1, right1 = curobs[index1[i]-1], curobs[index1[i]]
+            left2, right2 = curobs[index2[i]-1], curobs[index2[i]]
+            flag_i, index1[i], index2[i] = Boundary_detection(
+                obs_len[i], left1, right1, left2, right2, index1[i], index2[i],
+                mean1, mean2, mean3, std1, std2, std3
+            )
+            flag |= flag_i
+
+    # Return means, stds, and transition probabilities between states
+    mean = np.around((mean1, mean2, mean3), 3)
+    std = np.around((std1, std2, std3), 3)
+    index1_sum = sum(index1)
+    index2_sum = sum(index2)
+    total_len = np.sum(obs_len)
+
+    p12 = np.around(3/index1_sum, 3)
+    p23 = np.around(3/(index2_sum - index1_sum), 3)
+    p3e = np.around(3/(total_len - index2_sum), 3)
+
+    transition_probs = [[1-p12, p12], [1-p23, p23], [1-p3e, p3e]]
+    return (mean, std, transition_probs)
+
+
+# Gaussian likelihood of a given value under a distribution
+
+def gaussian_prob(x, para_tuple):
+    if list(para_tuple) == [None, None]:
+        return 0.0
+
+    mean, std = para_tuple
+    return (2 * np.pi * std**2)**-0.5 * np.exp(-(x - mean)**2 / (2 * std**2))
+
+
+# Viterbi decoding algorithm (standard 1D observation)
+
+def viterbi(evidence_vector, states, prior_probs, transition_probs, emission_paras):
+    if evidence_vector == []:
+        return [], 0.
+
+    n = len(evidence_vector)
+    next_state_probabilities = prior_probs.copy()
+
+    # Initialize first time step
+    for state in states:
+        next_state_probabilities[state] *= gaussian_prob(evidence_vector[0], emission_paras[state])
+
+    survive_state = []
+
+    for i in range(1, n):
+        s = {}
+        evidence = evidence_vector[i]
+        cur_state_probabilities = next_state_probabilities.copy()
+        evidence_state_probs = {
+            state: gaussian_prob(evidence, emission_paras[state]) for state in states
+        }
+
+        for state in states:
+            next_state_probabilities[state] = 0.
+
+        for cur_state in states:
+            cur_prob = cur_state_probabilities[cur_state]
+            if cur_prob == 0.:
+                continue
+            for next_state in transition_probs[cur_state]:
+                trans_prob = transition_probs[cur_state][next_state]
+                new_prob = cur_prob * trans_prob * evidence_state_probs[next_state]
+                if new_prob > next_state_probabilities[next_state]:
+                    next_state_probabilities[next_state] = new_prob
+                    s[next_state] = cur_state
+
+        survive_state.append(s)
+
+    sequence = [''] * n
+    probability = max(next_state_probabilities.values())
+    last_state = max(next_state_probabilities.items(), key=lambda x: x[1])[0]
+    sequence[-1] = last_state
+
+    for i in range(n-2, -1, -1):
+        sequence[i] = survive_state[i][sequence[i+1]]
+
+    return sequence, probability
+
+
+# Multivariate Viterbi: works for 2D observations (e.g., (right-hand y, thumb y))
+
+def multidimensional_viterbi(evidence_vector, states, prior_probs, transition_probs, emission_paras):
+    if evidence_vector == []:
+        return [], 0.
+
+    n = len(evidence_vector)
+    next_state_probabilities = prior_probs.copy()
+
+    for state in states:
+        y1, y2 = evidence_vector[0]
+        next_state_probabilities[state] *= gaussian_prob(y1, emission_paras[state][0]) * gaussian_prob(y2, emission_paras[state][1])
+
+    survive_state = []
+
+    for i in range(1, n):
+        s = {}
+        evidence = evidence_vector[i]
+        cur_state_probabilities = next_state_probabilities.copy()
+        evidence_state_probs = {
+            state: gaussian_prob(evidence[0], emission_paras[state][0]) * gaussian_prob(evidence[1], emission_paras[state][1])
+            for state in states
+        }
+
+        for state in states:
+            next_state_probabilities[state] = 0.
+
+        for cur_state in states:
+            cur_prob = cur_state_probabilities[cur_state]
+            if cur_prob == 0.:
+                continue
+            for next_state in transition_probs[cur_state]:
+                trans_prob = transition_probs[cur_state][next_state][0] * transition_probs[cur_state][next_state][1]
+                new_prob = cur_prob * trans_prob * evidence_state_probs[next_state]
+                if new_prob > next_state_probabilities[next_state]:
+                    next_state_probabilities[next_state] = new_prob
+                    s[next_state] = cur_state
+
+        survive_state.append(s)
+
+    sequence = [''] * n
+    probability = max(next_state_probabilities.values())
+    last_state = max(next_state_probabilities.items(), key=lambda x: x[1])[0]
+    sequence[-1] = last_state
+
+    for i in range(n-2, -1, -1):
+        sequence[i] = survive_state[i][sequence[i+1]]
+
+    return sequence, probability
+
+
+# Simple function to return author name
+
+def return_your_name():
+    return "Evelyn Shi"
