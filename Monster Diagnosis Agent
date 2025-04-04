@@ -1,0 +1,72 @@
+# Author: Evelyn Shi
+# Project: Monster Diagnosis Agent
+# Description:
+# This agent determines the smallest combination of diseases that explains 
+# a patient's observed vitamin imbalances using a logic-based approach. 
+# Each disease has effects ('+', '-', or '0') on vitamin levels, and the 
+# goal is to find the minimal subset of diseases whose combined effects 
+# match the patient's symptoms.
+
+from itertools import combinations
+from collections import defaultdict
+
+class MonsterDiagnosisAgent:
+    def __init__(self):
+        # Initialization placeholder; nothing needed currently.
+        pass
+
+    def solve(self, diseases, patient):
+        """
+        Finds the smallest set of diseases that fully explains the patient's symptoms.
+
+        Parameters:
+            diseases (dict): Dictionary mapping disease names to their effects on vitamins.
+                             Each disease maps to another dictionary with vitamin keys and 
+                             '+' (increase), '-' (decrease), or '0' (no effect).
+            patient (dict): Dictionary of symptoms (vitamin effects) to be explained with 
+                            keys as vitamin names and values as '+'/'-'/'0'.
+
+        Returns:
+            list: A list of disease names that together explain the patient's symptoms.
+        """
+
+        def explains(symptoms, disease_combination):
+            """
+            Check whether a combination of diseases explains all of the patient's symptoms.
+
+            Parameters:
+                symptoms (dict): Patient's vitamin imbalance observations.
+                disease_combination (tuple): A tuple of disease names being tested.
+
+            Returns:
+                bool: True if the combined effects of diseases match the symptoms.
+            """
+            combined_effects = defaultdict(int)
+
+            # Accumulate the effect of each disease in the combination
+            for disease in disease_combination:
+                for vitamin, effect in diseases[disease].items():
+                    if effect == '+':
+                        combined_effects[vitamin] += 1
+                    elif effect == '-':
+                        combined_effects[vitamin] -= 1
+
+            # Check if all symptoms are matched by the combined effects
+            return all(
+                (combined_effects[vitamin] > 0 and effect == '+') or
+                (combined_effects[vitamin] < 0 and effect == '-') or
+                (combined_effects[vitamin] == 0 and effect == '0')
+                for vitamin, effect in symptoms.items()
+            )
+
+        # Get all disease names to generate combinations
+        disease_names = list(diseases.keys())
+
+        # Try combinations of diseases from size 1 to all diseases
+        for size in range(1, len(disease_names) + 1):
+            for disease_combination in combinations(disease_names, size):
+                if explains(patient, disease_combination):
+                    return list(disease_combination)
+
+        # If no combination explains the symptoms, return an empty list
+        return []
