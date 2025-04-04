@@ -1,0 +1,130 @@
+"""
+Assignment Description:
+This assignment involves constructing Bayesian Networks to model two different scenarios:
+1. A fictional security breach scenario involving characters and organizations, where students must create the Bayesian Network structure, define the Conditional Probability Distributions (CPDs), and use inference to answer probability queries.
+2. A competitive game scenario involving teams A, B, and C. Students model match outcomes based on team skills, implement sampling techniques (Gibbs and Metropolis-Hastings), and compare their convergence behaviors.
+
+Key Tasks:
+- Define Bayesian network structure and CPDs.
+- Perform inference using Variable Elimination.
+- Implement Gibbs sampling and Metropolis-Hastings algorithms.
+- Measure convergence behavior of both sampling techniques.
+- Return the student's name from a function.
+
+Note: The use of certain pgmpy modules (sampling.*, factors.*, estimators.*) is restricted.
+"""
+
+import sys
+from numpy import zeros, float32
+import numpy as np
+import random
+from pgmpy.models import BayesianNetwork
+from pgmpy.factors.discrete import TabularCPD
+from pgmpy.inference import VariableElimination
+
+
+def make_security_system_net():
+    BayesNet = BayesianNetwork()
+    BayesNet.add_node("H")
+    BayesNet.add_node("C")
+    BayesNet.add_node("M")
+    BayesNet.add_node("B")
+    BayesNet.add_node("Q")
+    BayesNet.add_node("K")
+    BayesNet.add_node("D")
+    BayesNet.add_edge("H", "Q")
+    BayesNet.add_edge("C", "Q")
+    BayesNet.add_edge("M", "K")
+    BayesNet.add_edge("B", "K")
+    BayesNet.add_edge("Q", "D")
+    BayesNet.add_edge("K", "D")
+    return BayesNet
+
+
+def set_probability(bayes_net):
+    cpd_H = TabularCPD('H', 2, values=[[0.5], [0.5]])
+    cpd_C = TabularCPD('C', 2, values=[[0.7], [0.3]])
+    cpd_M = TabularCPD('M', 2, values=[[0.2], [0.8]])
+    cpd_B = TabularCPD('B', 2, values=[[0.5], [0.5]])
+
+    cpd_Q = TabularCPD('Q', 2, values=[
+        [0.95, 0.75, 0.45, 0.10],
+        [0.05, 0.25, 0.55, 0.90]
+    ], evidence=['H', 'C'], evidence_card=[2, 2])
+
+    cpd_K = TabularCPD('K', 2, values=[
+        [0.25, 0.99, 0.05, 0.85],
+        [0.75, 0.01, 0.95, 0.15]
+    ], evidence=['M', 'B'], evidence_card=[2, 2])
+
+    cpd_D = TabularCPD('D', 2, values=[
+        [0.98, 0.65, 0.4, 0.01],
+        [0.02, 0.35, 0.6, 0.99]
+    ], evidence=['Q', 'K'], evidence_card=[2, 2])
+
+    bayes_net.add_cpds(cpd_H, cpd_C, cpd_M, cpd_B, cpd_Q, cpd_K, cpd_D)
+    return bayes_net
+
+
+def get_marginal_double0(bayes_net):
+    solver = VariableElimination(bayes_net)
+    marginal_prob = solver.query(variables=['D'], joint=False)
+    double0_prob = marginal_prob['D'].values[1]
+    return double0_prob
+
+
+def get_conditional_double0_given_no_contra(bayes_net):
+    solver = VariableElimination(bayes_net)
+    conditional_prob = solver.query(variables=['D'], evidence={'C': 0}, joint=False)
+    double0_prob = conditional_prob['D'].values[1]
+    return double0_prob
+
+
+def get_conditional_double0_given_no_contra_and_bond_guarding(bayes_net):
+    solver = VariableElimination(bayes_net)
+    conditional_prob = solver.query(variables=['D'], evidence={'C': 0, 'B': 1}, joint=False)
+    double0_prob = conditional_prob['D'].values[1]
+    return double0_prob
+
+
+def get_game_network():
+    BayesNet = BayesianNetwork()
+    BayesNet.add_nodes_from(["A", "B", "C", "AvB", "BvC", "CvA"])
+
+    cpd_A = TabularCPD(variable="A", variable_card=4, values=[[0.15], [0.45], [0.30], [0.10]])
+    cpd_B = TabularCPD(variable="B", variable_card=4, values=[[0.15], [0.45], [0.30], [0.10]])
+    cpd_C = TabularCPD(variable="C", variable_card=4, values=[[0.15], [0.45], [0.30], [0.10]])
+
+    dist = np.zeros((3, 16), dtype=np.float32)
+    for i in range(4):
+        for j in range(4):
+            idx = i * 4 + j
+            diff = j - i
+            if diff == 0:
+                dist[:, idx] = [0.1, 0.1, 0.8]
+            elif diff == 1:
+                dist[:, idx] = [0.2, 0.6, 0.2]
+            elif diff == -1:
+                dist[:, idx] = [0.6, 0.2, 0.2]
+            elif diff == 2:
+                dist[:, idx] = [0.15, 0.75, 0.1]
+            elif diff == -2:
+                dist[:, idx] = [0.75, 0.15, 0.1]
+            elif diff == 3:
+                dist[:, idx] = [0.05, 0.9, 0.05]
+            elif diff == -3:
+                dist[:, idx] = [0.9, 0.05, 0.05]
+
+    cpd_AvB = TabularCPD(variable="AvB", variable_card=3, values=dist, evidence=["A", "B"], evidence_card=[4, 4])
+    cpd_BvC = TabularCPD(variable="BvC", variable_card=3, values=dist, evidence=["B", "C"], evidence_card=[4, 4])
+    cpd_CvA = TabularCPD(variable="CvA", variable_card=3, values=dist, evidence=["C", "A"], evidence_card=[4, 4])
+
+    BayesNet.add_edges_from([("A", "AvB"), ("B", "AvB"),
+                             ("B", "BvC"), ("C", "BvC"),
+                             ("C", "CvA"), ("A", "CvA")])
+
+    BayesNet.add_cpds(cpd_A, cpd_B, cpd_C, cpd_AvB, cpd_BvC, cpd_CvA)
+    assert BayesNet.check_model()
+    return BayesNet
+
+# NOTE: Because the full code is very long, I’ve stopped here. I’ll continue in the next message with the rest (sampling methods, etc.)
